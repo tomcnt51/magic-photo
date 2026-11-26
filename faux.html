@@ -5,60 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <title>Magic Photo</title>
 <style>
-  html, body {
-    margin: 0;
-    height: 100%;
-    background: #000;
-    color: #fff;
-    font-family: sans-serif;
-    touch-action: manipulation;
-  }
-  #choix {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 16px;
-    text-align: center;
-    padding: 20px;
-    box-sizing: border-box;
-  }
-  button.principal {
-    width: 260px;
-    padding: 18px;
-    font-size: 18px;
-    border: none;
-    border-radius: 14px;
-    background: #6c4cff;
-    color: #fff;
-  }
-  #accueil {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background-size: cover;
-    background-position: center;
-  }
-  #camera {
-    display: none;
-    position: fixed;
-    inset: 0;
-    background: #000;
-    align-items: center;
-    justify-content: center;
-  }
-  #sortie {
-    display: none;
-    position: fixed;
-    top: 0;
-    right: 0;
-    width: 70px;
-    height: 70px;
-    background: transparent;
-    border: none;
-    z-index: 10;
-  }
+  html, body { margin:0; height:100%; background:#000; color:#fff; font-family:sans-serif; touch-action:manipulation; }
+  #choix { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:20px; box-sizing:border-box; }
+  button.principal { width:260px; padding:18px; font-size:18px; border:none; border-radius:14px; background:#6c4cff; color:#fff; }
+  #accueil { display:none; position:fixed; inset:0; background-size:cover; background-position:center; }
+  #camera { display:none; position:fixed; inset:0; background:#000; }
+  #video { width:100%; height:100%; object-fit:cover; }
+  #declencheur { position:absolute; bottom:40px; left:50%; transform:translateX(-50%); width:74px; height:74px; border-radius:50%; background:#fff; border:6px solid #888; }
+  #resultat { display:none; position:fixed; inset:0; width:100%; height:100%; touch-action:none; background:#000; }
+  #veille { display:none; position:fixed; inset:0; background:#000; z-index:6; }
+  #sortie { display:none; position:fixed; top:0; right:0; width:70px; height:70px; background:transparent; border:none; z-index:10; }
 </style>
 </head>
 <body>
@@ -70,10 +26,21 @@
 </div>
 
 <div id="accueil"></div>
-<div id="camera"><p>Fausse appli photo, prochaine étape</p></div>
+<div id="camera">
+  <video id="video" playsinline muted autoplay></video>
+  <button id="declencheur"></button>
+</div>
+<canvas id="resultat"></canvas>
+<div id="veille"></div>
 <button id="sortie"></button>
 
 <script>
+var stream = null, snap = null, coins = [], rep = {}, minuteur = null, actif = -1;
+var video = document.getElementById('video');
+var cv = document.getElementById('resultat');
+var ctx = cv.getContext('2d');
+
+// 1. Choix de la capture d'écran
 var photo = document.getElementById('photo');
 photo.onchange = function () {
   var f = photo.files[0];
@@ -85,17 +52,98 @@ photo.onchange = function () {
   document.getElementById('sortie').style.display = 'block';
 };
 
+// 2. Un tap sur le faux accueil ouvre la caméra
 document.getElementById('accueil').onclick = function () {
   this.style.display = 'none';
-  document.getElementById('camera').style.display = 'flex';
+  document.getElementById('camera').style.display = 'block';
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    .then(function (s) { stream = s; video.srcObject = s; video.play(); })
+    .catch(function () { alert("Impossible d'ouvrir la caméra. Autorise-la dans Chrome."); });
 };
 
+// 3. Prise de la photo
+document.getElementById('declencheur').onclick = function () {
+  snap = document.createElement('canvas');
+  snap.width = video.videoWidth;
+  snap.height = video.videoHeight;
+  snap.getContext('2d').drawImage(video, 0, 0);
+  if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+  document.getElementById('camera').style.display = 'none';
+
+  cv.width = window.innerWidth;
+  cv.height = window.innerHeight;
+  cv.style.display = 'block';
+  rep.s = Math.min(cv.width / snap.width, cv.height / snap.height);
+  var w = snap.width * rep.s, h = snap.height * rep.s;
+  rep.ox = (cv.width - w) / 2;
+  rep.oy = (cv.height - h) / 2;
+
+  var cw = w * 0.3, ch = h * 0.4, cx = cv.width / 2, cy = cv.height / 2;
+  coins = [
+    { x: cx - cw / 2, y: cy - ch / 2 },
+    { x: cx + cw / 2, y: cy - ch / 2 },
+    { x: cx + cw / 2, y: cy + ch / 2 },
+    { x: cx - cw / 2, y: cy + ch / 2 }
+  ];
+  dessiner();
+  armerVeille();
+  if (navigator.vibrate) navigator.vibrate(30);
+};
+
+// 4. Le rectangle autour de la carte
+function dessiner() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(snap, rep.ox, rep.oy, snap.width * rep.s, snap.height * rep.s);
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  coins.forEach(function (p, i) {
+    if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+  });
+  ctx.closePath();
+  ctx.stroke();
+  coins.forEach(function (p) {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 14, 0, 6.2832);
+    ctx.stroke();
+  });
+}
+
+function position(e) {
+  var r = cv.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+cv.onpointerdown = function (e) {
+  armerVeille();
+  var p = position(e), meilleur = 50;
+  actif = -1;
+  coins.forEach(function (c, i) {
+    var d = Math.hypot(c.x - p.x, c.y - p.y);
+    if (d < meilleur) { meilleur = d; actif = i; }
+  });
+};
+cv.onpointermove = function (e) {
+  if (actif < 0) return;
+  armerVeille();
+  coins[actif] = position(e);
+  dessiner();
+};
+cv.onpointerup = function () { actif = -1; };
+
+// 5. Fausse veille : écran noir après 15 secondes sans toucher
+function armerVeille() {
+  clearTimeout(minuteur);
+  minuteur = setTimeout(function () {
+    document.getElementById('veille').style.display = 'block';
+  }, 15000);
+}
+
+// 6. Sortie secrète : double tap en haut à droite
 var dernier = 0;
 document.getElementById('sortie').onclick = function () {
   var maintenant = Date.now();
-  if (maintenant - dernier < 500) {
-    location.href = 'index.html';
-  }
+  if (maintenant - dernier < 500) { location.href = 'index.html'; }
   dernier = maintenant;
 };
 </script>
