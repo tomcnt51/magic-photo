@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Magic Photo</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #000;
+    color: #fff;
+    font-family: sans-serif;
+    touch-action: manipulation;
+  }
+  #choix {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    text-align: center;
+    padding: 20px;
+    box-sizing: border-box;
+  }
+  button.principal {
+    width: 260px;
+    padding: 18px;
+    font-size: 18px;
+    border: none;
+    border-radius: 14px;
+    background: #6c4cff;
+    color: #fff;
+  }
+  #accueil {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background-size: cover;
+    background-position: center;
+  }
+  #camera {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: #000;
+    align-items: center;
+    justify-content: center;
+  }
+  #sortie {
+    display: none;
+    position: fixed;
+    top: 0;
+    right: 0;
+    width: 70px;
+    height: 70px;
+    background: transparent;
+    border: none;
+    z-index: 10;
+  }
+</style>
+</head>
+<body>
+
+<div id="choix">
+  <p>Choisis la capture d'écran de ton écran d'accueil</p>
+  <button class="principal" onclick="document.getElementById('photo').click()">Choisir la capture</button>
+  <input type="file" id="photo" accept="image/*" style="display:none">
+</div>
+
+<div id="accueil"></div>
+<div id="camera"><p>Fausse appli photo, prochaine étape</p></div>
+<button id="sortie"></button>
+
+<script>
+var photo = document.getElementById('photo');
+photo.onchange = function () {
+  var f = photo.files[0];
+  if (!f) return;
+  var url = URL.createObjectURL(f);
+  document.getElementById('accueil').style.backgroundImage = "url('" + url + "')";
+  document.getElementById('choix').style.display = 'none';
+  document.getElementById('accueil').style.display = 'block';
+  document.getElementById('sortie').style.display = 'block';
+};
+
+document.getElementById('accueil').onclick = function () {
+  this.style.display = 'none';
+  document.getElementById('camera').style.display = 'flex';
+};
+
+var dernier = 0;
+document.getElementById('sortie').onclick = function () {
+  var maintenant = Date.now();
+  if (maintenant - dernier < 500) {
+    location.href = 'index.html';
+  }
+  dernier = maintenant;
+};
+</script>
+</body>
+</html>
