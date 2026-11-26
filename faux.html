@@ -13,7 +13,7 @@
   #video { width:100%; height:100%; object-fit:cover; }
   #declencheur { position:absolute; bottom:40px; left:50%; transform:translateX(-50%); width:74px; height:74px; border-radius:50%; background:#fff; border:6px solid #888; }
   #resultat { display:none; position:fixed; inset:0; width:100%; height:100%; touch-action:none; background:#000; }
-  #veille { display:none; position:fixed; inset:0; background:#000; z-index:6; }
+  #veille { display:none; position:fixed; inset:0; background:#000; z-index:6; touch-action:none; }
   #sortie { display:none; position:fixed; top:0; right:0; width:70px; height:70px; background:transparent; border:none; z-index:10; }
 </style>
 </head>
@@ -35,10 +35,16 @@
 <button id="sortie"></button>
 
 <script>
+var CARTES = 'cartes/';
+var VALEURS = { HD:1, DH:2, DD:3, DB:4, BD:5, BB:6, BG:7, GB:8, GG:9, GH:10, HG:11, HH:12, HB:13 };
+var COULEURS = { H:'pique', D:'coeur', B:'trefle', G:'carreau' };
+
 var stream = null, snap = null, coins = [], rep = {}, minuteur = null, actif = -1;
+var saisie = [], depart = null, fini = false;
 var video = document.getElementById('video');
 var cv = document.getElementById('resultat');
 var ctx = cv.getContext('2d');
+var veille = document.getElementById('veille');
 
 // 1. Choix de la capture d'écran
 var photo = document.getElementById('photo');
@@ -90,7 +96,7 @@ document.getElementById('declencheur').onclick = function () {
   if (navigator.vibrate) navigator.vibrate(30);
 };
 
-// 4. Le rectangle autour de la carte
+// 4. Le rectangle autour de la carte (coins : haut gauche, haut droit, bas droit, bas gauche)
 function dessiner() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, cv.width, cv.height);
@@ -134,18 +140,82 @@ cv.onpointerup = function () { actif = -1; };
 // 5. Fausse veille : écran noir après 15 secondes sans toucher
 function armerVeille() {
   clearTimeout(minuteur);
-  minuteur = setTimeout(function () {
-    document.getElementById('veille').style.display = 'block';
-  }, 15000);
+  minuteur = setTimeout(function () { veille.style.display = 'block'; }, 15000);
 }
 
-// 6. Sortie secrète : double tap en haut à droite
-var dernier = 0;
-document.getElementById('sortie').onclick = function () {
-  var maintenant = Date.now();
-  if (maintenant - dernier < 500) { location.href = 'index.html'; }
-  dernier = maintenant;
+// 6. Lecture des 3 swipes sur l'écran noir
+veille.onpointerdown = function (e) { depart = { x: e.clientX, y: e.clientY }; };
+veille.onpointerup = function (e) {
+  if (!depart || fini) return;
+  var dx = e.clientX - depart.x, dy = e.clientY - depart.y;
+  depart = null;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < 40) return;
+  var d = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'D' : 'G') : (dy > 0 ? 'B' : 'H');
+  saisie.push(d);
+  if (saisie.length === 3) { fini = true; terminer(); }
 };
-</script>
-</body>
-</html>
+
+function terminer() {
+  var v = VALEURS[saisie[0] + saisie[1]];
+  var c = COULEURS[saisie[2]];
+  var img = new Image();
+  img.onload = function () {
+    remplacer(img);
+    snap.toBlob(function (blob) {
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'IMG_' + Date.now() + '.jpg';
+      document.body.appendChild(a);
+      a.click();
+      if (navigator.vibrate) navigator.vibrate([60, 40, 60]);
+      setTimeout(function () { location.href = 'index.html'; }, 1500);
+    }, 'image/jpeg', 0.95);
+  };
+  img.onerror = function () {
+    alert('Image introuvable : ' + CARTES + v + '-' + c + '.jpg');
+    saisie = []; fini = false;
+  };
+  img.src = CARTES + v + '-' + c + '.jpg';
+}
+
+// 7. Remplacement de la carte en respectant la perspective
+function remplacer(img) {
+  var q = coins.map(function (p) {
+    return { x: (p.x - rep.ox) / rep.s, y: (p.y - rep.oy) / rep.s };
+  });
+  var X = q.map(function (p) { return p.x; });
+  var Y = q.map(function (p) { return p.y; });
+  var len = function (i, j) { return Math.hypot(X[i] - X[j], Y[i] - Y[j]); };
+  var w = Math.max(10, Math.round((len(0, 1) + len(3, 2)) / 2));
+  var h = Math.max(10, Math.round((len(0, 3) + len(1, 2)) / 2));
+
+  var tmp = document.createElement('canvas');
+  tmp.width = w; tmp.height = h;
+  var tc = tmp.getContext('2d');
+  tc.imageSmoothingQuality = 'high';
+  tc.drawImage(img, 0, 0, w, h);
+  var src = tc.getImageData(0, 0, w, h).data;
+
+  var sx = X[0] - X[1] + X[2] - X[3], sy = Y[0] - Y[1] + Y[2] - Y[3];
+  var dx1 = X[1] - X[2], dx2 = X[3] - X[2], dy1 = Y[1] - Y[2], dy2 = Y[3] - Y[2];
+  var det = dx1 * dy2 - dx2 * dy1;
+  var g = (sx * dy2 - dx2 * sy) / det, hh = (dx1 * sy - sx * dy1) / det;
+  var a = X[1] - X[0] + g * X[1], b = X[3] - X[0] + hh * X[3], c0 = X[0];
+  var d = Y[1] - Y[0] + g * Y[1], e = Y[3] - Y[0] + hh * Y[3], f = Y[0];
+  var A = e - f * hh, B = c0 * hh - b, C = b * f - c0 * e;
+  var D = f * g - d, E = a - c0 * g, F = c0 * d - a * f;
+  var G = d * hh - e * g, H = b * g - a * hh, I = a * e - b * d;
+
+  var W = snap.width, Hh = snap.height;
+  var x0 = Math.max(0, Math.floor(Math.min.apply(null, X)));
+  var x1 = Math.min(W - 1, Math.ceil(Math.max.apply(null, X)));
+  var y0 = Math.max(0, Math.floor(Math.min.apply(null, Y)));
+  var y1 = Math.min(Hh - 1, Math.ceil(Math.max.apply(null, Y)));
+
+  var sc = snap.getContext('2d');
+  var im = sc.getImageData(0, 0, W, Hh);
+  var out = im.data;
+  for (var y = y0; y <= y1; y++) {
+    for (var x = x0; x <= x1; x++) {
+      var den = G * x + H * y + I;
+      var u = (A * x + B * y + C) / den, v
