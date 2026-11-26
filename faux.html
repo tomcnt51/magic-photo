@@ -11,8 +11,14 @@
   #accueil { display:none; position:fixed; inset:0; background-size:cover; background-position:center; }
   #camera { display:none; position:fixed; inset:0; background:#000; }
   #video { width:100%; height:100%; object-fit:cover; }
+  #suivi { position:absolute; inset:0; pointer-events:none; }
   #declencheur { position:absolute; bottom:40px; left:50%; transform:translateX(-50%); width:74px; height:74px; border-radius:50%; background:#fff; border:6px solid #888; }
   #resultat { display:none; position:fixed; inset:0; width:100%; height:100%; touch-action:none; background:#000; }
+  .barre { display:none; position:fixed; bottom:30px; left:0; right:0; flex-direction:column; align-items:center; gap:12px; z-index:5; }
+  .barre .ligne { display:flex; gap:16px; }
+  .barre button { width:120px; padding:16px; font-size:18px; border:none; border-radius:14px; background:#6c4cff; color:#fff; }
+  .barre button.non { background:#444; }
+  .barre p { margin:0; font-size:14px; color:#ccc; }
   #veille { display:none; position:fixed; inset:0; background:#000; z-index:6; touch-action:none; }
   #sortie { display:none; position:fixed; top:0; right:0; width:70px; height:70px; background:transparent; border:none; z-index:10; }
 </style>
@@ -27,9 +33,20 @@
 <div id="accueil"></div>
 <div id="camera">
   <video id="video" playsinline muted autoplay></video>
+  <canvas id="suivi"></canvas>
   <button id="declencheur"></button>
 </div>
 <canvas id="resultat"></canvas>
+
+<div id="bApercu" class="barre">
+  <p>Le cadre bleu est-il bien placé ?</p>
+  <div class="ligne"><button id="oui">Oui</button><button id="non" class="non">Non</button></div>
+</div>
+<div id="bManuel" class="barre">
+  <p id="info"></p>
+  <div class="ligne"><button id="ok">OK</button></div>
+</div>
+
 <div id="veille"></div>
 <button id="sortie"></button>
 
@@ -38,11 +55,13 @@ var CARTES = 'cartes/';
 var VALEURS = { HD:1, DH:2, DD:3, DB:4, BD:5, BB:6, BG:7, GB:8, GG:9, GH:10, HG:11, HH:12, HB:13 };
 var COULEURS = { H:'pique', D:'coeur', B:'trefle', G:'carreau' };
 
-var stream = null, snap = null, coins = [], rep = {}, minuteur = null, actif = -1;
+var stream = null, snap = null, coins = [], rep = {}, actif = -1, mode = '', boucle = null;
 var saisie = [], depart = null, fini = false;
 var video = document.getElementById('video');
 var cv = document.getElementById('resultat');
 var ctx = cv.getContext('2d');
+var suivi = document.getElementById('suivi');
+var sctx = suivi.getContext('2d');
 var veille = document.getElementById('veille');
 
 // 1. Le faux fond d'écran enregistré dans les Paramètres
@@ -57,17 +76,128 @@ if (fond) {
   document.getElementById('manque').style.display = 'flex';
 }
 
-// 2. Un tap sur le faux accueil ouvre la caméra
+// 2. Détection d'un rectangle clair (la carte). Renvoie 4 points (haut gauche, haut droit, bas droit, bas gauche) entre 0 et 1, ou null.
+function aire(p) {
+  var a = 0;
+  for (var i = 0; i < 4; i++) { var j = (i + 1) % 4; a += p[i][0] * p[j][1] - p[j][0] * p[i][1]; }
+  return Math.abs(a) / 2;
+}
+function dist(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1]); }
+
+function detecter(src, W) {
+  var sw = src.videoWidth || src.width, sh = src.videoHeight || src.height;
+  if (!sw || !sh) return null;
+  var w = W, h = Math.round(W * sh / sw), n = w * h;
+  var c = detecter.c || (detecter.c = document.createElement('canvas'));
+  c.width = w; c.height = h;
+  var cx = c.getContext('2d', { willReadFrequently: true });
+  cx.drawImage(src, 0, 0, w, h);
+  var d = cx.getImageData(0, 0, w, h).data;
+
+  var bl = new Uint8Array(n), hist = new Array(256).fill(0), i, t;
+  for (i = 0; i < n; i++) {
+    var m = Math.min(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]);
+    bl[i] = m; hist[m]++;
+  }
+  var somme = 0;
+  for (t = 0; t < 256; t++) somme += t * hist[t];
+  var sB = 0, wB = 0, vmax = -1, seuil = 128;
+  for (t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (!wB) continue;
+    var wF = n - wB;
+    if (!wF) break;
+    sB += t * hist[t];
+    var mB = sB / wB, mF = (somme - sB) / wF;
+    var v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > vmax) { vmax = v; seuil = t; }
+  }
+
+  var lab = new Uint8Array(n), stack = new Int32Array(n), pix = new Int32Array(n);
+  var rmin = new Int16Array(h), rmax = new Int16Array(h);
+  var meilleur = null, meilleurScore = 0;
+
+  for (var s = 0; s < n; s++) {
+    if (bl[s] <= seuil || lab[s]) continue;
+    var cnt = 0, top = 0;
+    stack[top++] = s; lab[s] = 1;
+    while (top) {
+      var p = stack[--top];
+      pix[cnt++] = p;
+      var x = p % w, y = (p - x) / w;
+      if (x > 0 && !lab[p - 1] && bl[p - 1] > seuil) { lab[p - 1] = 1; stack[top++] = p - 1; }
+      if (x < w - 1 && !lab[p + 1] && bl[p + 1] > seuil) { lab[p + 1] = 1; stack[top++] = p + 1; }
+      if (y > 0 && !lab[p - w] && bl[p - w] > seuil) { lab[p - w] = 1; stack[top++] = p - w; }
+      if (y < h - 1 && !lab[p + w] && bl[p + w] > seuil) { lab[p + w] = 1; stack[top++] = p + w; }
+    }
+    if (cnt < n * 0.03 || cnt > n * 0.8) continue;
+
+    rmin.fill(w); rmax.fill(-1);
+    var a1 = 1e9, a2 = -1e9, b1 = 1e9, b2 = -1e9, tl, br, tr, bl2;
+    for (var k = 0; k < cnt; k++) {
+      var q = pix[k], qx = q % w, qy = (q - qx) / w;
+      var sm = qx + qy, df = qx - qy;
+      if (sm < a1) { a1 = sm; tl = [qx, qy]; }
+      if (sm > a2) { a2 = sm; br = [qx, qy]; }
+      if (df > b2) { b2 = df; tr = [qx, qy]; }
+      if (df < b1) { b1 = df; bl2 = [qx, qy]; }
+      if (qx < rmin[qy]) rmin[qy] = qx;
+      if (qx > rmax[qy]) rmax[qy] = qx;
+    }
+    var span = 0;
+    for (var r = 0; r < h; r++) if (rmax[r] >= 0) span += rmax[r] - rmin[r] + 1;
+
+    var quad = [tl, tr, br, bl2];
+    var qa = aire(quad);
+    if (qa < 1) continue;
+    var rect = span / qa;
+    if (rect < 0.8 || rect > 1.2) continue;
+    if (cnt / span < 0.45) continue;
+    var lw = (dist(tl, tr) + dist(bl2, br)) / 2, lh = (dist(tl, bl2) + dist(tr, br)) / 2;
+    var ratio = lw / lh;
+    if (ratio < 0.4 || ratio > 1.1) continue;
+    var score = span * (1 - Math.abs(1 - rect));
+    if (score > meilleurScore) { meilleurScore = score; meilleur = quad; }
+  }
+  if (!meilleur) return null;
+  return meilleur.map(function (p) { return { x: p[0] / w, y: p[1] / h }; });
+}
+
+// 3. Un tap sur le faux accueil ouvre la caméra, avec le suivi en direct
 document.getElementById('accueil').onclick = function () {
   this.style.display = 'none';
   document.getElementById('camera').style.display = 'block';
   navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
-    .then(function (s) { stream = s; video.srcObject = s; video.play(); })
-    .catch(function () { alert("Impossible d'ouvrir la caméra. Autorise-la dans Chrome."); });
+    .then(function (s) { stream = s; video.srcObject = s; video.play(); demarrerSuivi(); })
+    .catch(function () { alert("Impossible d'ouvrir la caméra. Autorise-la dans le navigateur."); });
 };
 
-// 3. Prise de la photo
+function demarrerSuivi() {
+  suivi.width = window.innerWidth;
+  suivi.height = window.innerHeight;
+  boucle = setInterval(function () {
+    if (!video.videoWidth) return;
+    sctx.clearRect(0, 0, suivi.width, suivi.height);
+    var q = detecter(video, 200);
+    if (!q) return;
+    var vw = video.videoWidth, vh = video.videoHeight;
+    var k = Math.max(suivi.width / vw, suivi.height / vh);
+    var ox = (suivi.width - vw * k) / 2, oy = (suivi.height - vh * k) / 2;
+    sctx.strokeStyle = 'rgba(80,170,255,0.9)';
+    sctx.lineWidth = 3;
+    sctx.beginPath();
+    q.forEach(function (p, i) {
+      var px = ox + p.x * vw * k, py = oy + p.y * vh * k;
+      if (i) sctx.lineTo(px, py); else sctx.moveTo(px, py);
+    });
+    sctx.closePath();
+    sctx.stroke();
+  }, 150);
+}
+
+// 4. Prise de la photo, puis aperçu avec le cadre bleu
 document.getElementById('declencheur').onclick = function () {
+  clearInterval(boucle);
   snap = document.createElement('canvas');
   snap.width = video.videoWidth;
   snap.height = video.videoHeight;
@@ -83,44 +213,79 @@ document.getElementById('declencheur').onclick = function () {
   rep.ox = (cv.width - w) / 2;
   rep.oy = (cv.height - h) / 2;
 
-  var cw = w * 0.3, ch = h * 0.4, cx = cv.width / 2, cy = cv.height / 2;
-  coins = [
-    { x: cx - cw / 2, y: cy - ch / 2 },
-    { x: cx + cw / 2, y: cy - ch / 2 },
-    { x: cx + cw / 2, y: cy + ch / 2 },
-    { x: cx - cw / 2, y: cy + ch / 2 }
-  ];
-  dessiner();
-  armerVeille();
+  var q = detecter(snap, 480);
+  if (q) {
+    coins = q.map(function (p) {
+      return { x: rep.ox + p.x * snap.width * rep.s, y: rep.oy + p.y * snap.height * rep.s };
+    });
+    passer('apercu');
+  } else {
+    var cw = w * 0.3, ch = h * 0.4, cx = cv.width / 2, cy = cv.height / 2;
+    coins = [
+      { x: cx - cw / 2, y: cy - ch / 2 }, { x: cx + cw / 2, y: cy - ch / 2 },
+      { x: cx + cw / 2, y: cy + ch / 2 }, { x: cx - cw / 2, y: cy + ch / 2 }
+    ];
+    document.getElementById('info').textContent = "Carte non détectée : place les coins, puis OK";
+    passer('manuel');
+  }
   if (navigator.vibrate) navigator.vibrate(30);
 };
 
-// 4. Le rectangle (coins : haut gauche, haut droit, bas droit, bas gauche)
+function passer(m) {
+  mode = m;
+  if (m === 'manuel' && !document.getElementById('info').textContent) {
+    document.getElementById('info').textContent = "Ajuste les coins, puis OK";
+  }
+  dessiner();
+  document.getElementById('bApercu').style.display = m === 'apercu' ? 'flex' : 'none';
+  document.getElementById('bManuel').style.display = m === 'manuel' ? 'flex' : 'none';
+}
+
 function dessiner() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, cv.width, cv.height);
   ctx.drawImage(snap, rep.ox, rep.oy, snap.width * rep.s, snap.height * rep.s);
-  ctx.strokeStyle = 'rgba(255,255,255,0.8)';
-  ctx.lineWidth = 2;
   ctx.beginPath();
   coins.forEach(function (p, i) {
     if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
   });
   ctx.closePath();
+  ctx.fillStyle = 'rgba(40,120,255,0.35)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(120,190,255,0.95)';
+  ctx.lineWidth = 2;
   ctx.stroke();
-  coins.forEach(function (p) {
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, 14, 0, 6.2832);
-    ctx.stroke();
-  });
+  if (mode === 'manuel') {
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    coins.forEach(function (p) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 14, 0, 6.2832);
+      ctx.stroke();
+    });
+  }
 }
 
+document.getElementById('non').onclick = function () {
+  document.getElementById('info').textContent = "Ajuste les coins, puis OK";
+  passer('manuel');
+};
+document.getElementById('oui').onclick = entrerVeille;
+document.getElementById('ok').onclick = entrerVeille;
+
+function entrerVeille() {
+  document.getElementById('bApercu').style.display = 'none';
+  document.getElementById('bManuel').style.display = 'none';
+  veille.style.display = 'block';
+  if (navigator.vibrate) navigator.vibrate(30);
+}
+
+// 5. Réglage manuel des coins
 function position(e) {
   var r = cv.getBoundingClientRect();
   return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 cv.onpointerdown = function (e) {
-  armerVeille();
+  if (mode !== 'manuel') return;
   var p = position(e), meilleur = 50;
   actif = -1;
   coins.forEach(function (c, i) {
@@ -129,20 +294,13 @@ cv.onpointerdown = function (e) {
   });
 };
 cv.onpointermove = function (e) {
-  if (actif < 0) return;
-  armerVeille();
+  if (mode !== 'manuel' || actif < 0) return;
   coins[actif] = position(e);
   dessiner();
 };
 cv.onpointerup = function () { actif = -1; };
 
-// 5. Fausse veille après 15 secondes
-function armerVeille() {
-  clearTimeout(minuteur);
-  minuteur = setTimeout(function () { veille.style.display = 'block'; }, 15000);
-}
-
-// 6. Lecture des 3 swipes
+// 6. Lecture des 3 swipes sur l'écran noir
 veille.onpointerdown = function (e) { depart = { x: e.clientX, y: e.clientY }; };
 veille.onpointerup = function (e) {
   if (!depart || fini) return;
