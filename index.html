@@ -32,6 +32,8 @@
 
 <script>
 var CLE = 'magicphoto_fond';
+// Tailles essayées dans l'ordre : côté maximal en pixels, qualité JPEG
+var ESSAIS = [[1280, 0.8], [960, 0.7], [720, 0.6]];
 
 function lire() {
   try { return localStorage.getItem(CLE); } catch (e) { return null; }
@@ -64,20 +66,26 @@ document.getElementById('fichier').onchange = function () {
   var url = URL.createObjectURL(file);
   var img = new Image();
   img.onload = function () {
-    var s = Math.min(1, 2400 / Math.max(img.width, img.height));
-    var c = document.createElement('canvas');
-    c.width = Math.round(img.width * s);
-    c.height = Math.round(img.height * s);
-    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-    try {
-      localStorage.setItem(CLE, c.toDataURL('image/jpeg', 0.92));
-      alert("Le fond d'écran a bien été modifié.");
-      montrer('menu');
-    } catch (e) {
-      alert("Impossible d'enregistrer cette image.");
+    var ok = false;
+    for (var i = 0; i < ESSAIS.length && !ok; i++) {
+      var s = Math.min(1, ESSAIS[i][0] / Math.max(img.width, img.height));
+      var c = document.createElement('canvas');
+      c.width = Math.round(img.width * s);
+      c.height = Math.round(img.height * s);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      try {
+        localStorage.setItem(CLE, c.toDataURL('image/jpeg', ESSAIS[i][1]));
+        ok = true;
+      } catch (e) {}
     }
     URL.revokeObjectURL(url);
     input.value = '';
+    if (ok) {
+      alert("Le fond d'écran a bien été modifié.");
+      montrer('menu');
+    } else {
+      alert("Impossible d'enregistrer cette image, même en la réduisant.");
+    }
   };
   img.onerror = function () { alert("Image illisible."); input.value = ''; };
   img.src = url;
