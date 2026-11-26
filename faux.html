@@ -6,7 +6,7 @@
 <title>Magic Photo</title>
 <style>
   html, body { margin:0; height:100%; background:#000; color:#fff; font-family:sans-serif; touch-action:manipulation; }
-  #choix { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:20px; box-sizing:border-box; }
+  #manque { display:none; height:100%; flex-direction:column; align-items:center; justify-content:center; gap:16px; text-align:center; padding:20px; box-sizing:border-box; }
   button.principal { width:260px; padding:18px; font-size:18px; border:none; border-radius:14px; background:#6c4cff; color:#fff; }
   #accueil { display:none; position:fixed; inset:0; background-size:cover; background-position:center; }
   #camera { display:none; position:fixed; inset:0; background:#000; }
@@ -19,10 +19,9 @@
 </head>
 <body>
 
-<div id="choix">
-  <p>Choisis la capture d'écran de ton écran d'accueil</p>
-  <button class="principal" onclick="document.getElementById('photo').click()">Choisir la capture</button>
-  <input type="file" id="photo" accept="image/*" style="display:none">
+<div id="manque">
+  <p>Aucun faux fond d'écran enregistré.</p>
+  <button class="principal" onclick="location.href='index.html'">Retour à Magic Photo</button>
 </div>
 
 <div id="accueil"></div>
@@ -46,17 +45,17 @@ var cv = document.getElementById('resultat');
 var ctx = cv.getContext('2d');
 var veille = document.getElementById('veille');
 
-// 1. Choix de la capture d'écran
-var photo = document.getElementById('photo');
-photo.onchange = function () {
-  var f = photo.files[0];
-  if (!f) return;
-  var url = URL.createObjectURL(f);
-  document.getElementById('accueil').style.backgroundImage = "url('" + url + "')";
-  document.getElementById('choix').style.display = 'none';
-  document.getElementById('accueil').style.display = 'block';
+// 1. Le faux fond d'écran enregistré dans les Paramètres
+var fond = null;
+try { fond = localStorage.getItem('magicphoto_fond'); } catch (e) {}
+if (fond) {
+  var acc = document.getElementById('accueil');
+  acc.style.backgroundImage = "url('" + fond + "')";
+  acc.style.display = 'block';
   document.getElementById('sortie').style.display = 'block';
-};
+} else {
+  document.getElementById('manque').style.display = 'flex';
+}
 
 // 2. Un tap sur le faux accueil ouvre la caméra
 document.getElementById('accueil').onclick = function () {
@@ -96,7 +95,7 @@ document.getElementById('declencheur').onclick = function () {
   if (navigator.vibrate) navigator.vibrate(30);
 };
 
-// 4. Le rectangle autour de la carte (coins : haut gauche, haut droit, bas droit, bas gauche)
+// 4. Le rectangle (coins : haut gauche, haut droit, bas droit, bas gauche)
 function dessiner() {
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, cv.width, cv.height);
@@ -137,13 +136,13 @@ cv.onpointermove = function (e) {
 };
 cv.onpointerup = function () { actif = -1; };
 
-// 5. Fausse veille : écran noir après 15 secondes sans toucher
+// 5. Fausse veille après 15 secondes
 function armerVeille() {
   clearTimeout(minuteur);
   minuteur = setTimeout(function () { veille.style.display = 'block'; }, 15000);
 }
 
-// 6. Lecture des 3 swipes sur l'écran noir
+// 6. Lecture des 3 swipes
 veille.onpointerdown = function (e) { depart = { x: e.clientX, y: e.clientY }; };
 veille.onpointerup = function (e) {
   if (!depart || fini) return;
@@ -178,7 +177,7 @@ function terminer() {
   img.src = CARTES + v + '-' + c + '.jpg';
 }
 
-// 7. Remplacement de la carte en respectant la perspective
+// 7. Remplacement de la carte en perspective
 function remplacer(img) {
   var q = coins.map(function (p) {
     return { x: (p.x - rep.ox) / rep.s, y: (p.y - rep.oy) / rep.s };
@@ -218,4 +217,31 @@ function remplacer(img) {
   for (var y = y0; y <= y1; y++) {
     for (var x = x0; x <= x1; x++) {
       var den = G * x + H * y + I;
-      var u = (A * x + B * y + C) / den, v
+      var u = (A * x + B * y + C) / den, v = (D * x + E * y + F) / den;
+      if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+      var fx = u * (w - 1), fy = v * (h - 1);
+      var ix = Math.floor(fx), iy = Math.floor(fy);
+      var tx = fx - ix, ty = fy - iy;
+      var ix2 = Math.min(ix + 1, w - 1), iy2 = Math.min(iy + 1, h - 1);
+      var o = (y * W + x) * 4;
+      for (var k = 0; k < 3; k++) {
+        var p00 = src[(iy * w + ix) * 4 + k], p10 = src[(iy * w + ix2) * 4 + k];
+        var p01 = src[(iy2 * w + ix) * 4 + k], p11 = src[(iy2 * w + ix2) * 4 + k];
+        out[o + k] = (p00 * (1 - tx) + p10 * tx) * (1 - ty) + (p01 * (1 - tx) + p11 * tx) * ty;
+      }
+      out[o + 3] = 255;
+    }
+  }
+  sc.putImageData(im, 0, 0);
+}
+
+// 8. Sortie secrète : double tap en haut à droite
+var dernier = 0;
+document.getElementById('sortie').onclick = function () {
+  var maintenant = Date.now();
+  if (maintenant - dernier < 500) { location.href = 'index.html'; }
+  dernier = maintenant;
+};
+</script>
+</body>
+</html>
